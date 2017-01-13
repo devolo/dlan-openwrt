@@ -1,0 +1,31 @@
+#!/bin/sh
+
+. /lib/ar71xx.sh
+
+board=$(ar71xx_board_name)
+
+case "$board" in
+dlan-hotspot)
+	echo 0 > /sys/class/gpio/gpio20/value
+	sleep 1
+	echo 1 > /sys/class/gpio/gpio20/value
+	;;
+
+dlan-pro-500-wp)
+	echo 0 > /sys/class/gpio/gpio13/value
+	sleep 1
+	echo 1 > /sys/class/gpio/gpio13/value
+	;;
+
+dlan-pro-1200-ac|\
+dlan-pro-1200-n)
+	echo 0 > /sys/class/gpio/gpio13/value
+	sleep 1
+	echo 1 > /sys/class/gpio/gpio13/value
+	;;
+
+*)
+	echo "$0: unknown board $board" >&2
+	exit 1;
+	;;
+esac

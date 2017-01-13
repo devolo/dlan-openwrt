@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# Copyright (C) 2015-2017 devolo AG
+#
+
+[ -e /etc/config/plc ] && exit 0
+
+. /lib/functions/uci-defaults.sh
+. /lib/ar71xx.sh
+
+touch /etc/config/plc
+uci set plc.plc=plc
+
+board=$(ar71xx_board_name)
+
+case "$board" in
+    dlan-hotspot)
+        uci set plc.plc.disabled=0
+        uci set plc.plc.interface=eth1
+        ;;
+    dlan-pro-500-wp)
+        uci set plc.plc.disabled=0
+        uci set plc.plc.interface=eth0
+        uci set plc.plc.individual_nmk=1
+        ;;
+    dlan-pro-1200-ac|\
+    dlan-pro-1200-n)
+        uci set plc.plc.disabled=0
+        uci set plc.plc.interface=eth0
+        uci set plc.plc.individual_nmk=1
+        ;;
+    *)
+        uci set plc.plc.disabled=1
+        ;;
+esac
+
+uci commit plc
+
+exit 0

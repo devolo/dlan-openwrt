@@ -1,0 +1,24 @@
+#!/bin/sh
+
+BEGIN_TIMEOUT=3
+LEAVE_TIMEOUT=10
+
+logger() {
+	command logger -t BTN_0 "$@"
+}
+
+logger "$BUTTON $ACTION after ${SEEN}s"
+
+[ "$ACTION" = "pressed" ] && exit $LEAVE_TIMEOUT
+
+. /lib/functions.sh
+
+if [ "$ACTION" = "released" -a "$SEEN" -lt $BEGIN_TIMEOUT ] ; then
+	logger "begin pairing"
+	plc-pushbtn 1
+elif [ "$ACTION" = "timeout" -a "$SEEN" -eq $LEAVE_TIMEOUT ] ; then
+	logger "leave network"
+	plc-pushbtn 2
+fi
+
+exit 0

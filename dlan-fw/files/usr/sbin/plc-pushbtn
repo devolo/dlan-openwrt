@@ -1,0 +1,16 @@
+#!/bin/sh
+
+[ -z "$1" ] && exit 1
+
+. /lib/functions.sh
+config_load plc
+config_get PLC plc interface 'br-lan'
+
+[ -e /lib/dlan/baptization.sh ] && . /lib/dlan/baptization.sh
+MAC="$DlanMacAddress"
+
+[ -z "$MAC" ] && MAC=$(chkpib /lib/firmware/plc/user.pib -v|sed -n -e '/MAC/s/.*MAC //p'|head -n 1)
+
+[ -z "$MAC" ] && exit 1
+
+/usr/bin/plctool -i "$PLC" -B"$1" "$MAC"

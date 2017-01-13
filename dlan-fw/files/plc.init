@@ -1,0 +1,349 @@
+#!/bin/sh /etc/rc.common
+
+# we must run after S95done because jffs2 overlay must be ready for writing to /lib/firmware/plc
+START=96
+STOP=10
+
+USE_PROCD=1
+
+. /lib/ar71xx.sh
+. /lib/functions.sh
+. /lib/functions/system.sh
+. /lib/functions/leds.sh
+
+board=$(ar71xx_board_name)
+
+. /lib/firmware/plc/$board/fwconfig
+
+config_load plc
+config_get PLCIF plc interface 'br-lan'
+config_get INMK plc individual_nmk '0'
+config_get LED_SCHEME plc led_scheme 'on'
+config_get_bool DISABLED plc disabled '0'
+config_get_bool STANDBY plc standby '0'
+
+[ -e /lib/dlan/baptization.sh ] && . /lib/dlan/baptization.sh
+
+[ -x /usr/sbin/plc-standby ] || STANDBY=0
+
+logger() {
+	command logger -t plc "$@"
+}
+
+set_ebtables() {
+    reset_ebtables
+
+    local PIB=/lib/firmware/plc/user.pib
+
+    dlan_mac=$(getpib "$PIB" 0xC mac)
+
+    while [ ! -d /sys/class/net/$PLCIF ]; do
+        logger "Waiting for /sys/class/net/$PLCIF to appear..."
+        sleep 1
+    done
+
+    eth_mac=$(cat /sys/class/net/$PLCIF/address)
+
+    ebtables -t broute -N plc -P RETURN
+    ebtables -t broute -I BROUTING -p 0x88e1 -j plc
+
+    ebtables -t broute -A plc -s 00:B0:52:00:00:01 -j DROP
+    ebtables -t broute -A plc -s $dlan_mac -d Broadcast -j DROP
+    ebtables -t broute -A plc -d $eth_mac -j DROP
+}
+
+reset_ebtables() {
+    ebtables -t broute -D BROUTING -p 0x88e1 -j plc 2>/dev/null
+    ebtables -t broute -X plc 2>/dev/null
+}
+
+set_dak()
+{
+    local dak="$DlanDAK"
+    if [ -n "$dak" ] ; then
+	/usr/bin/modpib -D "$dak" "$1" || logger "Writing DAK to PIB failed"
+    fi
+}
+
+update_dak()
+{
+    local dak="$DlanDAK"
+    if [ -z "$dak" ] ; then
+	if [ ! -f $PLCFW_PATH/security-id ] ; then
+	    { tr -dc a-zA-Z </dev/urandom | tr a-z A-Z | head -c16 |
+	      sed -e 's,\(....\),\1-,g' -e 's,-$,\n,' >$PLCFW_PATH/security-id; } 2>/dev/null
+	fi
+	local sid=$(head -n 1 $PLCFW_PATH/security-id)
+	local dak=$(hpavkey -D $sid)
+	if [ ! -f $PLCFW_PATH/dak ] || [ $(cat $PLCFW_PATH/dak) != $dak ] ; then
+	    echo $dak >$PLCFW_PATH/dak
+	fi
+	if [ "$(chkpib -v "$1" | sed -n '/DAK/s,:,,gp' | awk '{ print $2 }')" != "$dak" ]; then
+	    /usr/bin/modpib -D "$dak" "$1" || logger "Writing DAK to PIB failed"
+	fi
+    fi
+}
+
+set_individual_nmk()
+{
+    local sid="$DlanDevicePassword"
+    [ -z "$sid" ] && return 1
+
+    local prefix="lqaS0JTUC1FWY6OVivVsRqL57H6MjSom"
+    local suffix="8cxJaMHJqsR9yug2fLTbqqVxuGw3OLfg"
+    local nmk=$(echo -n "${prefix}${sid}${suffix}" |md5sum |sed s/../\&:/g | cut -c-47)
+    /usr/bin/modpib -N $nmk "$1"
+}
+
+set_mac_address()
+{
+    local plc_mac="$DlanMacAddress"
+
+    if [ -z "$plc_mac" ] ; then
+        local base_mac=$(mtd_get_mac_binary art 4098 2>/dev/null)
+        if [ "$board" = "dlan-pro-1200-n" ]; then
+            plc_mac=$(macaddr_add $base_mac 2)
+        else
+            plc_mac=$(macaddr_add $base_mac 3)
+        fi
+    fi
+    if [ -n "$plc_mac" ] ; then
+        /usr/bin/modpib -M $(macaddr_canonicalize $plc_mac) "$1"
+    fi
+}
+
+set_user_pib()
+{
+    if [ ! -f "$PLCFW_PATH/user.pib" ] ; then
+	eval cp "\"$PLCFW_PATH/\${PLCFW_PIB_$MT:-$PLCFW_PIB}\"" /tmp/user.pib
+	setpib /tmp/user.pib 6 word 0
+	set_dak /tmp/user.pib
+	set_mac_address /tmp/user.pib
+	if [ "$INMK" -eq 1 ]; then
+	    set_individual_nmk /tmp/user.pib
+	fi
+	mv /tmp/user.pib "$PLCFW_PATH"
+    fi
+    update_dak "$PLCFW_PATH/user.pib"
+}
+
+do_gpios()
+{
+    case "$board" in
+    dlan-hotspot)
+	echo 1 > /sys/class/gpio/gpio18/value
+	echo 1 > /sys/class/gpio/gpio22/value
+	sleep 1
+	echo 1 > /sys/class/gpio/gpio20/value
+	;;
+
+    dlan-pro-500-wp)
+	echo 1 > /sys/class/gpio/gpio17/value
+	echo 1 > /sys/class/gpio/gpio13/value
+	;;
+
+    dlan-pro-1200-ac|\
+    dlan-pro-1200-n)
+	echo 1 > /sys/class/gpio/gpio13/value
+	led_set_attr "devolo:status:dlan" inverted 1
+	;;
+    esac
+	sleep 1
+}
+
+get_pib_field() {
+    ( chkpib -v "$1" | grep "$2 " | cut -d ' ' -f 2- ) 2>/dev/null
+}
+
+activate() {
+    if chkpib -q "$PLCFW_PATH/user.pib.tmp" ; then
+        mv "$PLCFW_PATH/user.pib.tmp" "$PLCFW_PATH/user.pib"
+    fi
+    PIB="$PLCFW_PATH/user.pib"
+
+    if [ -f "$PLCFW_PATH/user.nvm.tmp" ] && [ -s "$PLCFW_PATH/user.nvm.tmp" ] ; then
+        mv "$PLCFW_PATH/user.nvm.tmp" "$PLCFW_PATH/user.nvm"
+    fi
+    NVM="$PLCFW_PATH/user.nvm"
+    if [ ! -s "$NVM" ] ; then
+        NVM="$PLCFW_PATH/$PLCFW_NVM"
+    fi
+
+    # last minute changes to user pib before using it
+    local changed=
+    cp "$PIB" /tmp/user.pib
+    # 1. system.hostname -> USR string
+    local usr="$(uci_get system.@system[0].hostname)"
+    local pib_usr="$(get_pib_field "$PIB" USR)"
+    [ "$usr" != "$pib_usr" ] && {
+	modpib -U "$usr" /tmp/user.pib
+	changed=1
+    }
+    # 2. LED scheme
+    [ -n "$LED_SCHEME" ] && [ -x "$PLCFW_SCHEMES/led_scheme_$LED_SCHEME" ] && {
+	"$PLCFW_SCHEMES/led_scheme_$LED_SCHEME" /tmp/user.pib
+	changed=1
+    }
+    [ -n "$changed" ] && {
+	mv /tmp/user.pib "$PIB.tmp"
+	mv "$PIB.tmp" "$PIB"
+    }
+
+    [ -f "$NVM" ] && {
+        logger "activate PLC Modem"
+        do_gpios
+        procd_open_instance
+        # run ***host - if it terminates try to save user.pib.tmp if it checks out
+        # procd needs setsid to not kill the init process in trap context
+        procd_set_param command setsid sh -c "
+                trap \"trap - TERM; kill 0; exit\" TERM
+                \"$PLCFW_HOST\" -i \"$PLCIF\" -N \"$NVM\" -P \"$PIB\" -n \"$PLCFW_PATH/user.nvm.tmp\" -p \"$PLCFW_PATH/user.pib.tmp\" &
+                wait \$!
+                chkpib -q /lib/firmware/plc/user.pib.tmp && mv /lib/firmware/plc/user.pib.tmp /lib/firmware/plc/user.pib
+                exit"
+        procd_set_param respawn 3600 5 0
+        # output to logd
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+        procd_close_instance
+        [ $STANDBY = "1" ] && {
+            procd_open_instance
+            procd_set_param command /usr/sbin/plc-standby 600
+            procd_set_param respawn 3600 5 0
+            procd_close_instance
+        }
+    }
+}
+
+stop_service() {
+    logger "stop PLC"
+    case "$board" in
+    dlan-hotspot)
+	echo 0 > /sys/class/gpio/gpio20/value
+	;;
+
+    dlan-pro-500-wp)
+	echo 0 > /sys/class/gpio/gpio13/value
+	;;
+
+    dlan-pro-1200-ac|\
+    dlan-pro-1200-n)
+	# reinstall normal led trigger potentially messed up by standby
+	( . /etc/init.d/led && config_load system && load_led led_plcw )
+	echo 0 > /sys/class/gpio/gpio13/value
+	led_set_attr "devolo:status:dlan" inverted 0
+	;;
+    esac
+    reset_ebtables
+}
+
+start_service() {
+    [ $DISABLED = '1' ] && return
+
+    [ -r /lib/firmware/plc/$board/fwconfig ] && [ -r "$PLCFW_PATH/$PLCFW_PIB" ] && [ -r "$PLCFW_PATH/$PLCFW_NVM" ] || {
+	logger "PLC: Firmware for $board not found!"
+	return 1
+    }
+    set_user_pib
+    set_ebtables
+    logger "start PLC"
+    activate
+}
+
+reload_service() {
+    stop
+    start
+}
+
+service_triggers()
+{
+    procd_add_reload_trigger plc system
+}
+
+boot() {
+    # user PIB: DAKs must be unique, MAC must match the device. Correct it if different (after config restore).
+    if chkpib -q $PLCFW_PATH/user.pib.tmp ; then
+        mv $PLCFW_PATH/user.pib.tmp $PLCFW_PATH/user.pib
+    fi
+    [ -f $PLCFW_PATH/user.pib ] && {
+	cp $PLCFW_PATH/user.pib /tmp/user.pib
+	set_dak /tmp/user.pib
+	set_mac_address /tmp/user.pib
+	cmp -s /tmp/user.pib $PLCFW_PATH/user.pib || mv /tmp/user.pib $PLCFW_PATH/user.pib
+	rm -f /tmp/user.pib
+    }
+    if [ -f $PLCFW_PATH/security-id ] ; then
+        sid=$(head -n 1 $PLCFW_PATH/security-id)
+        dak=$(hpavkey -D $sid)
+        if [ "$(chkpib -v $PLCFW_PATH/user.pib | sed -n '/DAK/s,:,,gp' | awk '{ print $2 }')" != "$dak" ]; then
+            rm -f $PLCFW_PATH/security-id $PLCFW_PATH/dak
+        fi
+    fi
+
+    start "$@"
+}
+
+EXTRA_COMMANDS="$EXTRA_COMMANDS standby normal"
+
+standby() {
+    #if on and enabled
+    [ $DISABLED = '1' ] && return
+    [ $STANDBY = '0' ] && return
+
+    case "$board" in
+    dlan-pro-1200-ac|\
+    dlan-pro-1200-n)
+        # LED scheme 2014
+        [ "$LED_SCHEME" = "on" ] && {
+            led_timer "$(uci_get system led_plcw sysfs)" 500 59500
+        }
+        # standby on
+        echo 0 > /sys/class/gpio/gpio13/value
+        led_set_attr "devolo:status:dlan" inverted 0
+        ;;
+    esac
+}
+
+normal() {
+    #if on and enabled
+    [ $DISABLED = '1' ] && return
+    [ $STANDBY = '0' ] && return
+
+    case "$board" in
+    dlan-pro-1200-ac|\
+    dlan-pro-1200-n)
+        # LED scheme 2014
+        [ "$LED_SCHEME" = "on" ] && {
+            ( . /etc/init.d/led && config_load system && load_led led_plcw )
+        }
+        # standby off
+        echo 1 > /sys/class/gpio/gpio13/value
+        led_set_attr "devolo:status:dlan" inverted 1
+        ;;
+    esac
+}
+
+# redirect enable action
+[ $action = "enable" ] && action=plc_enable && EXTRA_COMMANDS="$EXTRA_COMMANDS $action"
+
+plc_enable() {
+    enable "$@"
+
+    # make service state persistent, but don't apply it
+    [ $DISABLED = '1' ] && uci batch <<EOF
+set plc.plc.disabled=0
+commit plc
+EOF
+}
+
+# redirect disable action
+[ $action = "disable" ] && action=plc_disable && EXTRA_COMMANDS="$EXTRA_COMMANDS $action"
+
+plc_disable() {
+    disable "$@"
+    # make service state persistent, but don't apply it
+    [ $DISABLED = '0' ] && uci batch <<EOF
+set plc.plc.disabled=1
+commit plc
+EOF
+}
