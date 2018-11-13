@@ -11,7 +11,7 @@ USE_PROCD=1
 . /lib/functions/system.sh
 . /lib/functions/leds.sh
 
-board=$(ar71xx_board_name)
+type -t board_name >/dev/null && board=$(board_name) || board=$(ar71xx_board_name)
 
 . /lib/firmware/plc/$board/fwconfig
 
