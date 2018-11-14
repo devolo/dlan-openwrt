@@ -6,12 +6,16 @@
 [ -e /etc/config/plc ] && exit 0
 
 . /lib/functions/uci-defaults.sh
-. /lib/ar71xx.sh
 
 touch /etc/config/plc
 uci set plc.plc=plc
 
-board=$(ar71xx_board_name)
+type -t board_name >/dev/null || {
+	# for old OpenWrt without generic board_name function
+	. /lib/ar71xx.sh
+	board_name() ar71xx_board_name
+}
+board=$(board_name)
 
 case "$board" in
     dlan-hotspot)
