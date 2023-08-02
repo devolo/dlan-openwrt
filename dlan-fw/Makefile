@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2015-2017 devolo AG
+# Copyright (C) 2015-2023 devolo GmbH
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.

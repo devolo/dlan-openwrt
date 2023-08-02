@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (C) 2015-2017 devolo AG
+# Copyright (C) 2015-2023 devolo GmbH
 #
 
 [ -e /etc/config/plc ] && exit 0
