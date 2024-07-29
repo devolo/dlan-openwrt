@@ -39,4 +39,4 @@ Copyright (c) Qualcomm Atheros, Inc.
 See LICENSE in qca/*
 
 All other files:
-Copyright (c) 2023 devolo GmbH
+Copyright (c) 2024 devolo solutions GmbH
